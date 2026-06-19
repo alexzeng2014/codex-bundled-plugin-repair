@@ -1,0 +1,3 @@
+display_name: Bundled Plugin Repair
+short_description: Fix Codex bundled marketplace plugins cache corruption by creating a junction to the WindowsApps source
+default_prompt: 电脑操控/浏览器等内置插件用不了了，帮我修复
