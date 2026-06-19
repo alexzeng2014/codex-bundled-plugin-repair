@@ -42,8 +42,21 @@ Write-Host ""
 Write-Host "[2/5] Locating Codex installation..."
 $codexPackage = Get-AppxPackage -Name "OpenAI.Codex" -ErrorAction SilentlyContinue
 if (-not $codexPackage) {
-    # Fallback: try wildcard in case package name varies
-    $codexPackage = Get-AppxPackage -Name "*Codex*" -ErrorAction SilentlyContinue | Where-Object { $_.PublisherId -eq "2p2nqsd0c76g0" -or $_.Name -like "*OpenAI*" }
+    # Fallback: find from running Codex process
+    $codexProc = Get-Process -Name "Codex" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($codexProc) {
+        $exePath = $codexProc.MainModule.FileName
+        Write-Host "  Found Codex process: $exePath"
+        if ($exePath -match '(C:\\Program Files\\WindowsApps\\OpenAI\.Codex_[^\\]+)') {
+            $installLocation = $matches[1]
+            Write-Host "  InstallLocation from process: $installLocation"
+            $codexPackage = [PSCustomObject]@{ InstallLocation = $installLocation; Version = "detected" }
+        }
+    }
+    if (-not $codexPackage) {
+        Write-Error "Could not find Codex Appx package. Is Codex installed via Microsoft Store?"
+        exit 1
+    }
 }
 if (-not $codexPackage) {
     Write-Error "Could not find Codex Appx package. Is Codex installed via Microsoft Store?"
@@ -63,16 +76,49 @@ Write-Host "  Source verified: $sourcePath"
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# Step 3: Build cache path
+# Step 3: Update config.toml to point source directly to WindowsApps
+# (bypasses the stale cache and removes the \\?\ prefix that breaks junctions)
+# ---------------------------------------------------------------------------
+Write-Host "[3/6] Updating config.toml..."
+$configPath = "$env:USERPROFILE\.codex\config.toml"
+if (Test-Path $configPath) {
+    # Backup
+    Copy-Item $configPath "$configPath.bak-plugin-repair" -Force -ErrorAction SilentlyContinue
+    
+    # Read config
+    $config = Get-Content $configPath -Raw -Encoding UTF8
+    $oldConfig = $config
+    
+    # Update source to point to WindowsApps directly (no \\?\ prefix)
+    $config = $config -replace 'source = ''.*?openai-bundled.*?''', "source = '$sourcePath'"
+    
+    # Update last_updated
+    $now = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $config = $config -replace 'last_updated = ".*?"', "last_updated = `"$now`""
+    
+    if ($config -ne $oldConfig) {
+        $config | Set-Content -Path $configPath -Encoding UTF8 -NoNewline
+        Write-Host "  Config updated: source = $sourcePath"
+        Write-Host "  Config updated: last_updated = $now"
+    } else {
+        Write-Host "  Config already up to date."
+    }
+} else {
+    Write-Warning "  Config.toml not found at $configPath"
+}
+Write-Host ""
+
+# ---------------------------------------------------------------------------
+# Step 4: Build cache path
 # ---------------------------------------------------------------------------
 $cacheParent = "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces"
 $cachePath = Join-Path $cacheParent "openai-bundled"
 
 if (-not (Test-Path $cachePath)) {
-    Write-Host "[3/5] Cache directory does not exist: $cachePath"
+    Write-Host "[4/6] Cache directory does not exist: $cachePath"
     Write-Host "  Creating directly..."
 } else {
-    Write-Host "[3/5] Backing up existing cache..."
+    Write-Host "[4/6] Backing up existing cache..."
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $backupPath = Join-Path $cacheParent "openai-bundled.bak-$stamp"
     try {
@@ -86,9 +132,9 @@ if (-not (Test-Path $cachePath)) {
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# Step 4: Remove stale cache directory (cleanup backup reference)
+# Step 5: Remove stale cache directory (cleanup backup reference)
 # ---------------------------------------------------------------------------
-Write-Host "[4/5] Ensuring cache path is clear..."
+Write-Host "[5/6] Ensuring cache path is clear..."
 if (Test-Path $cachePath) {
     Remove-Item -LiteralPath $cachePath -Recurse -Force -ErrorAction Stop
     Write-Host "  Removed stale: $cachePath"
@@ -98,9 +144,9 @@ if (Test-Path $cachePath) {
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# Step 5: Create junction
+# Step 6: Create junction
 # ---------------------------------------------------------------------------
-Write-Host "[5/5] Creating junction..."
+Write-Host "[6/6] Creating junction..."
 try {
     cmd /c "mklink /J `"$cachePath`" `"$sourcePath`""
     if ($LASTEXITCODE -ne 0) {
